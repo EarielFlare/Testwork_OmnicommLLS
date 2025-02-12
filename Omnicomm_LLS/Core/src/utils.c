@@ -1,8 +1,12 @@
-#include <main.h>
+#include "main.h"
 
 __IO	uint8_t	uart_rx_buffer[UART_BUFFER_SIZE];
 __IO	uint8_t	uart_rx_index;
-		uint8_t	response[9];
+__IO	uint8_t	response[9];
+
+__IO	uint8_t	tx_buffer[TX_BUFFER_SIZE];  // Буфер передачи
+__IO	uint8_t	tx_index = 0;
+__IO	uint8_t	tx_length = 0;
 
 U8	CRC8(U8 data, U8 crc){
     U8 i = data ^ crc;
@@ -18,7 +22,7 @@ U8	CRC8(U8 data, U8 crc){
     return crc;
 }
 
-U8	calculate_crc8(U8 *data, U8 length) {
+U8	calculate_crc8(volatile U8 *data, U8 length) {
     U8	crc = 0;
     U8	i = 1;
     while (i < (length - 1)){
@@ -28,15 +32,29 @@ U8	calculate_crc8(U8 *data, U8 length) {
     return crc;
 }
 
-void	send_data_str(uint8_t *data_str, uint8_t len){
-	uint8_t	i = 0;
+//	функция передачи оригинальных данных (массив response[])
+//void	send_data_str(volatile uint8_t *data_str, uint8_t len) {
+//    if (tx_length == 0) {
+//        tx_length = len;
+//        tx_index = 0;
+//        // Запускаем передачу первого байта
+//        WRITE_REG(USART1->DR, data_str[tx_index++]);
+//        // Включаем прерывание TXE (чтобы отправлять остальные байты в IRQ)
+//        SET_BIT(USART1->CR1, USART_CR1_TXEIE);
+//    }
+//}
 
-	while (i < len){
-		while ((USART1->SR & USART_SR_TXE) == 0)
-			;	//	ожидание освобождения буфера
-		USART1->DR = data_str[i];
-		i++;
-	}
+//	функция начала безопасной передачи данных (работа с массивом-копией):
+void	send_data_str(volatile uint8_t *data_str, uint8_t len){
+    if (tx_length == 0 && len <= TX_BUFFER_SIZE) {  // Проверяем, влезает ли сообщение в буфер
+        memcpy((uint8_t *)tx_buffer, (const uint8_t *)data_str, len);  // Копируем данные в безопасный буфер
+        tx_length = len;
+        tx_index = 0;
+        // Запускаем передачу первого байта
+        WRITE_REG(USART1->DR, tx_buffer[tx_index++]);
+        // Включаем прерывание TXE (чтобы отправлять остальные байты в IRQ)
+        SET_BIT(USART1->CR1, USART_CR1_TXEIE);
+    }
 }
 
 //	Основная функция формирования посылки
@@ -61,15 +79,29 @@ void	form_response(uint8_t sender_address){
 void USART1_IRQHandler(void) {
     if (USART1->SR & USART_SR_RXNE) {  // Флаг RXNE (приём данных)
         uint8_t received_byte = USART1->DR;
-
         if (uart_rx_index < UART_BUFFER_SIZE) {
             uart_rx_buffer[uart_rx_index++] = received_byte;
         }
-
         if (uart_rx_index >= UART_BUFFER_SIZE) {
             uart_rx_index = 0;
             data_received_flag = 1;	//	Флаг о принятии полного сообщения
         }
+    }
+
+    if (READ_BIT(USART1->SR, USART_SR_TXE)
+    		&& READ_BIT(USART1->CR1, USART_CR1_TXEIE)) {  // Передача данных
+//    	//	при использовании оригинального массива response[]:
+//    	if (tx_index < tx_length) {
+//       		WRITE_REG(USART1->DR, response[tx_index++]);
+    	//	при использовании копии - массива tx_buffer[]
+    	//	типа безопасное копирование, данные на передачу в массиве-копии:
+    	if (tx_index < tx_length) {
+    		WRITE_REG(USART1->DR, tx_buffer[tx_index++]);
+    	} else {
+    		// Отключаем TXEIE, так как передача завершена
+    		CLEAR_BIT(USART1->CR1, USART_CR1_TXEIE);
+    		tx_length = 0;
+    	}
     }
 }
 
@@ -95,7 +127,7 @@ void process_uart_data(void) {
     }
     // Если операция 06h, вызываем data_proc()
     if (request.operation == 0x06) {
-    	//	отправка строки data_str по USART (посимвольно)
+    	//	запуск передачи данных по USART (по байтам)
     	send_data_str(response, 9);
     }
     data_received_flag = 0;  // Сбрасываем флаг

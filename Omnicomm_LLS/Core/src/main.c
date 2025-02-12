@@ -1,4 +1,6 @@
-#include <main.h>
+#include "main.h"
+
+__IO	uint8_t	data_received_flag;
 
 int main(void){
 	//	ДЕинициализации HSE/PLL (переход на HSI)

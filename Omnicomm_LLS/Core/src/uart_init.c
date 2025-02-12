@@ -1,4 +1,4 @@
-#include <main.h>
+#include "main.h"
 
 void	UART_Init(void){
 	//	этот кусок кода позволняет сконфигурировать ПИНЫ
